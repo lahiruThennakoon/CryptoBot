@@ -103,11 +103,17 @@ def analyse_costs(inputs: CostInputs) -> CostReport:
             f"${notional:,.2f} — below the exchange minimum of ${i.min_notional:,.2f}. "
             "The bot cannot place this trade at all."
         )
-    if report.monthly_cost_pct_of_equity >= 10:
+    if report.monthly_cost_pct_of_equity >= 5:
         report.warnings.append(
             f"At {i.trades_per_day:g} trades/day these costs alone consume "
             f"{report.monthly_cost_pct_of_equity:.0f}% of your account per month. "
             "Very few strategies out-earn that; fewer trades is usually better."
+        )
+    elif i.trades_per_day >= 8:
+        report.warnings.append(
+            f"At {i.trades_per_day:g} trades/day, fees and spreads add up to roughly "
+            f"{report.monthly_cost_pct_of_equity:.1f}% of your account per month. "
+            "Fewer, higher-conviction trades usually survive costs better."
         )
     if report.breakeven_move_pct >= 0.5:
         report.warnings.append(

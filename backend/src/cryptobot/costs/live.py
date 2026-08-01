@@ -233,6 +233,7 @@ class LiveCostBasis:
     spread_provenance: Provenance
     slippage_provenance: Provenance
     notes: list[str] = field(default_factory=list)
+    book: OrderBook | None = None
 
     @property
     def all_live(self) -> bool:
@@ -291,4 +292,5 @@ def build_live_cost_model(
         spread_provenance=spread_provenance,
         slippage_provenance=slip.provenance,
         notes=notes,
+        book=book,
     )

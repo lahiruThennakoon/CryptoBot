@@ -25,6 +25,7 @@ from cryptobot.exchange.models import (
     Side,
     SymbolRules,
 )
+from cryptobot.paper.account import PaperAccount
 from cryptobot.paper.broker import PaperExecution
 
 logger = get_logger(__name__)
@@ -33,9 +34,19 @@ D = Decimal
 
 
 class TestnetBroker:
-    def __init__(self, adapter: ExchangeAdapter, rules_by_symbol: dict[str, SymbolRules]) -> None:
+    def __init__(
+        self,
+        adapter: ExchangeAdapter,
+        rules_by_symbol: dict[str, SymbolRules],
+        account: PaperAccount | None = None,
+        quote_asset: str = "USDT",
+        starting_balance: Decimal | None = None,
+    ) -> None:
         self._adapter = adapter
         self._rules = rules_by_symbol
+        self.account = account or PaperAccount.with_starting_balance(
+            quote_asset, starting_balance or D("10000"),
+        )
 
     async def execute_market(
         self,
@@ -69,6 +80,15 @@ class TestnetBroker:
             )
         fill_price = state.avg_fill_price or reference_price
         fee = sum((f.fee_amount for f in state.fills), D("0"))
+        from cryptobot.paper.account import PaperFill
+
+        self.account.apply_fill(
+            PaperFill(
+                symbol=symbol, side=side, price=fill_price, qty=state.executed_qty,
+                fee_amount=fee, fee_asset=quote_asset,
+            ),
+            base_asset=base_asset, quote_asset=quote_asset,
+        )
         logger.info("testnet_fill", symbol=symbol, side=side.value,
                     qty=str(state.executed_qty), price=str(fill_price))
         return PaperExecution(

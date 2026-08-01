@@ -67,6 +67,8 @@ async def overview(request: Request) -> dict[str, Any]:
         "live_trading": "disabled",
         "paused": controls.paused,
         "emergency_stop": controls.emergency_stop,
+        "risk_halted": controls.risk_halted,
+        "risk_halt_reason": controls.risk_halt_reason or None,
         "equity": equity,
         "cash": float(latest_equity.cash) if latest_equity else None,
         "exposure": float(latest_equity.exposure) if latest_equity else None,
@@ -761,6 +763,13 @@ async def put_session(request: Request, body: dict[str, Any]) -> dict[str, Any]:
         row.updated_at = utcnow()
         await session.commit()
         version = row.version
+    from cryptobot.config.versioning import record_config_change
+
+    await record_config_change(
+        _sessions(request), "session", body,
+        change_note=f"session config v{version}",
+        created_by="operator",
+    )
     await _audit(request, "session_config_updated", f"v{version}")
     return {"saved": True, "version": version}
 
@@ -1061,6 +1070,29 @@ async def ai_clear(request: Request, body: dict[str, Any]) -> dict[str, str]:
     return {"status": "cleared"}
 
 
+# ── config versions (NFR-8) ───────────────────────────────────────────
+@router.get("/config/versions")
+async def list_config_versions(request: Request, limit: int = 20) -> dict[str, Any]:
+    from cryptobot.db.models import ConfigVersion
+
+    async with _sessions(request)() as session:
+        rows = (await session.execute(
+            select(ConfigVersion).order_by(desc(ConfigVersion.version)).limit(limit)
+        )).scalars().all()
+    return {
+        "versions": [
+            {
+                "version": r.version, "scope": r.scope,
+                "content_hash": r.content_hash,
+                "change_note": r.change_note,
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
 # ── controls (high-risk: arm/confirm flow + audit) ────────────────────
 async def _audit(request: Request, action: str, detail: str = "") -> None:
     async with _sessions(request)() as session:
@@ -1089,7 +1121,54 @@ async def resume(request: Request, body: ConfirmedAction) -> dict[str, str]:
         raise HTTPException(403, "invalid or expired confirmation token")
     await _controls(request).resume()
     await _audit(request, "resume")
+    async with _sessions(request)() as session:
+        session.add(RiskEventRow(
+            account_id=request.app.state.account_id, event_type="resume",
+            detail="operator resume — pause and emergency stop cleared",
+        ))
+        await session.commit()
     return {"status": "resumed"}
+
+
+@router.post("/controls/clear-halt")
+async def clear_halt(request: Request, body: ConfirmedAction) -> dict[str, str]:
+    """Clear portfolio risk halt after operator review (FR-4.3)."""
+    if not await _controls(request).confirm(body.confirm_token):
+        raise HTTPException(403, "invalid or expired confirmation token")
+
+    ctrl = await _controls(request).state()
+    if ctrl.risk_halt_reason == "reconciliation_mismatch":
+        raise HTTPException(
+            409,
+            "Reconciliation mismatch halt requires fixing DB/exchange state and "
+            "restarting the trader — cannot clear via API alone.",
+        )
+
+    settings = get_settings()
+    from cryptobot.risk.engine import BasicRiskEngine
+    from cryptobot.runtime.state_restore import load_risk_state_for_review
+
+    risk_state = await load_risk_state_for_review(
+        _sessions(request), request.app.state.account_id,
+        settings.paper_quote_asset, float(settings.paper_starting_balance_quote),
+    )
+    breach = BasicRiskEngine().check_halts(risk_state)  # type: ignore[arg-type]
+    if breach is not None:
+        raise HTTPException(
+            409,
+            f"limits still breached ({breach.reason_code}): {breach.detail}. "
+            "Resolve the underlying condition before clearing halt.",
+        )
+
+    await _controls(request).clear_risk_halt()
+    await _audit(request, "clear_risk_halt")
+    async with _sessions(request)() as session:
+        session.add(RiskEventRow(
+            account_id=request.app.state.account_id, event_type="resume",
+            limit_name="risk_halt", detail="operator cleared portfolio halt",
+        ))
+        await session.commit()
+    return {"status": "risk_halt_cleared"}
 
 
 @router.post("/controls/emergency-stop")

@@ -33,12 +33,14 @@ class BinanceMarketStream:
         symbols: list[str],
         intervals: list[str],
         include_trades: bool = False,
+        include_depth: bool = False,
         max_backoff_s: float = 60.0,
     ) -> None:
         self._base = ws_base_url.rstrip("/")
         self._symbols = [s.lower() for s in symbols]
         self._intervals = intervals
         self._include_trades = include_trades
+        self._include_depth = include_depth
         self._max_backoff_s = max_backoff_s
         self.reconnect_count = 0
         self.last_event_at: datetime | None = None
@@ -49,6 +51,8 @@ class BinanceMarketStream:
             streams.extend(f"{symbol}@kline_{iv}" for iv in self._intervals)
             if self._include_trades:
                 streams.append(f"{symbol}@trade")
+            if self._include_depth:
+                streams.append(f"{symbol}@depth20@100ms")
         return f"{self._base}/stream?streams={'/'.join(streams)}"
 
     async def events(self) -> AsyncIterator[MarketEvent]:  # type: ignore[override]
@@ -116,5 +120,15 @@ class BinanceMarketStream:
                 symbol=str(data["s"]),
                 received_at=now,
                 payload={"price": data["p"], "qty": data["q"], "trade_time": data["T"]},
+            )
+        if event_type == "depthUpdate":
+            return MarketEvent(
+                type=MarketEventType.DEPTH,
+                symbol=str(data["s"]),
+                received_at=now,
+                payload={
+                    "bids": data.get("b", [])[:5],
+                    "asks": data.get("a", [])[:5],
+                },
             )
         return None

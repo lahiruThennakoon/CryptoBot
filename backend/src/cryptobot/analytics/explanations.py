@@ -27,7 +27,7 @@ EXPLANATIONS: dict[str, Explanation] = {
     "COST_GATE": Explanation(
         "Expected profit too small to cover fees",
         "Every trade pays exchange fees, the bid-ask spread, and slippage. This "
-        "signal's expected profit was smaller than those costs plus a safety margin, "
+        "signal's expected profit was smaller than those costs plus an extra buffer, "
         "so taking it would most likely have lost money even if the prediction was right.",
     ),
     "LOW_CONFIDENCE": Explanation(

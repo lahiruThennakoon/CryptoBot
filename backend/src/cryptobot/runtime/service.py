@@ -71,33 +71,45 @@ class PaperTradingService:
             strategy_names = enabled_strategies or list(STRATEGY_REGISTRY)
             strategies = [STRATEGY_REGISTRY[name]() for name in strategy_names]
 
-        # Decision scorer gets its OWN strategy instances (stateful strategies
-        # must not share state between scoring and trading paths).
-        from cryptobot.decision.scoring import DecisionScorer
-        from cryptobot.pairs.service import enabled_symbols
-
-        if demo_mode:
-            from cryptobot.strategies.demo_pulse import DEMO_STRATEGIES as _DS
-
-            scorer = DecisionScorer([cls() for cls in _DS.values()])
-        else:
-            scorer = DecisionScorer([STRATEGY_REGISTRY[n]() for n in strategy_names])
-
         # Execution policy + cost model reflecting it (maker entries are cheaper)
+        from cryptobot.decision.scoring import DecisionScorer, Gates
         from cryptobot.execution.policy import (
             ExecutionPolicy,
             OrderStyle,
             effective_costs,
         )
+        from cryptobot.pairs.service import enabled_symbols
+        from cryptobot.risk.engine import RiskConfig
 
-        policy = ExecutionPolicy(
-            entry_style=OrderStyle.MAKER_LIMIT
-            if settings.entry_order_style == "maker_limit" else OrderStyle.MARKET,
-            limit_offset_bps=settings.maker_limit_offset_bps,
-            ttl_bars=settings.maker_ttl_bars,
-            bnb_discount=settings.bnb_fee_discount,
-        )
+        if demo_mode:
+            policy = ExecutionPolicy(entry_style=OrderStyle.MARKET)
+            demo_gates = Gates(buy_threshold=0.2, strong_buy_threshold=0.45)
+            risk = BasicRiskEngine(RiskConfig(min_confidence=0.4))
+        else:
+            policy = ExecutionPolicy(
+                entry_style=OrderStyle.MAKER_LIMIT
+                if settings.entry_order_style == "maker_limit" else OrderStyle.MARKET,
+                limit_offset_bps=settings.maker_limit_offset_bps,
+                ttl_bars=settings.maker_ttl_bars,
+                bnb_discount=settings.bnb_fee_discount,
+            )
+            demo_gates = None
+            risk = BasicRiskEngine()
+
         costs = effective_costs(CostModel(), policy)
+
+        # Decision scorer gets its OWN strategy instances (stateful strategies
+        # must not share state between scoring and trading paths).
+        if demo_mode:
+            from cryptobot.strategies.demo_pulse import DEMO_STRATEGIES as _DS
+
+            scorer = DecisionScorer(
+                [cls() for cls in _DS.values()], costs=costs, gates=demo_gates,
+            )
+        else:
+            scorer = DecisionScorer(
+                [STRATEGY_REGISTRY[n]() for n in strategy_names], costs=costs,
+            )
 
         # Live cost discovery: real commission rates + real spread + depth-based
         # slippage, refreshed per request with caching. Falls back conservatively.
@@ -122,10 +134,16 @@ class PaperTradingService:
         async def _enabled() -> set[str]:
             return await enabled_symbols(sessions)
 
+        from cryptobot.ml.inference import DeployedModelPredictor
+        from cryptobot.runtime.market_context import build_market_context
+
+        ml = DeployedModelPredictor(settings.model_registry_dir)
+        strategy_interval = strategies[0].spec.timeframe if strategies else "1h"
+
         self.runtime = TradingRuntime(
             broker=PaperBroker(account, costs),  # swapped for TestnetBroker in run()
             strategies=strategies,
-            risk=BasicRiskEngine(),
+            risk=risk,
             costs=costs,
             execution_policy=policy,
             live_costs=_live_costs,
@@ -133,11 +151,31 @@ class PaperTradingService:
             events=self._make_events(),
             notifier=Notifier(),  # channels configured via env in _bootstrap
             controls_state=self._controls.state,
+            controls=self._controls,
             enabled_pairs=_enabled,
             decision_scorer=scorer,
             analysis_only=settings.execution_mode == "analysis",
             loss_cooldown_hours=0.03 if demo_mode else 1.0,   # ~2 min in demo
+            stale_after_s=settings.market_data_stale_after_s,
         )
+
+        async def _market_context(symbol: str, bars: list) -> object:
+            rt = self.runtime
+            equity = rt._risk_state.equity or float(settings.paper_starting_balance_quote)
+            intended_notional = equity * rt.risk.config.max_position_pct
+            btc_history = rt._history.get(("BTCUSDT", strategy_interval), [])
+            return await build_market_context(
+                symbol,
+                bars,
+                has_open_position=symbol in rt._positions,
+                data_fresh=not rt._stale(),
+                intended_notional=intended_notional,
+                live_costs=_live_costs,
+                ml_predictor=ml.probability_up,
+                btc_bars=btc_history if symbol != "BTCUSDT" else None,
+            )
+
+        self.runtime.market_context_builder = _market_context
         self._current_day: str | None = None
 
     # ── persistence hooks (buffered; flushed on a timer) ─────────────
@@ -292,20 +330,101 @@ class PaperTradingService:
                 if row.daily_profit_target_pct else None,
                 target_protection=TargetProtection(row.target_protection),
             )
-        self.runtime.session_state = SessionState(
-            day_start_equity=float(settings.paper_starting_balance_quote)
+        # Restore persisted state (FR-8.1) and route execution
+        from cryptobot.runtime.state_restore import (
+            apply_high_water_mark,
+            restore_paper_state,
+            restore_risk_counters,
         )
 
-        # v2: execution routing (analysis handled via analysis_only flag)
+        account, positions, equity, restore_report, closed_today, hwm = await restore_paper_state(
+            self._sessions, self._account_id, settings.paper_quote_asset,
+            float(settings.paper_starting_balance_quote),
+        )
+        self.runtime.restore_positions(positions)
+        apply_high_water_mark(self.runtime._risk_state, equity, hwm)
+        restore_risk_counters(closed_today, self.runtime._risk_state)
+        halt = self.runtime.risk.check_halts(self.runtime._risk_state)
+        if halt is not None:
+            await self._controls.set_risk_halted(halt.reason_code)
+            self.runtime._risk_state.halted = True
+            self.runtime._risk_state.halt_reason = halt.detail
+        self.runtime.session_state = SessionState(day_start_equity=equity)
+        logger.info("state_restored", **restore_report.__dict__)
+
         if settings.execution_mode == "testnet":
             from cryptobot.exchange.testnet_broker import TestnetBroker
+            from cryptobot.execution.policy import ExecutionPolicy, OrderStyle
 
             rules = await self._adapter.get_exchange_rules()
-            self.runtime.broker = TestnetBroker(self._adapter, rules.symbols)  # type: ignore[assignment]
+            self.runtime.broker = TestnetBroker(  # type: ignore[assignment]
+                self._adapter, rules.symbols,
+                account=account, quote_asset=settings.paper_quote_asset,
+            )
+            # Testnet broker is market-only; maker limits are paper-only.
+            self.runtime.execution_policy = ExecutionPolicy(entry_style=OrderStyle.MARKET)
             logger.info("execution_routing", mode="testnet",
                         note="orders go to Binance Spot Testnet after all checks")
         else:
+            self.runtime.broker.account = account  # type: ignore[attr-defined]
             logger.info("execution_routing", mode=settings.execution_mode)
+
+        await self.runtime.sync_controls_halt()
+
+        from cryptobot.runtime.reconciliation import reconcile_on_startup
+
+        reconcile = await reconcile_on_startup(
+            self._sessions, self._account_id, settings.paper_quote_asset,
+            settings.execution_mode,
+            self._adapter if settings.execution_mode == "testnet" else None,
+            set(self.runtime._positions.keys()),
+        )
+        if not reconcile.ok:
+            await self._controls.set_risk_halted("reconciliation_mismatch")
+            self.runtime._risk_state.halted = True
+            self.runtime._risk_state.halt_reason = "reconciliation_mismatch"
+            logger.warning("reconciliation_halt", mismatches=reconcile.mismatches)
+            if self.runtime.notifier is not None:
+                from cryptobot.notifications.service import Severity
+
+                await self.runtime.notifier.send(
+                    "reconciliation_halt",
+                    "STARTUP RECONCILIATION FAILED — trading halted until operator review. "
+                    f"Mismatches: {'; '.join(reconcile.mismatches[:3])}",
+                    Severity.CRITICAL,
+                )
+
+        from cryptobot.config.versioning import record_config_change, settings_snapshot
+
+        await record_config_change(
+            self._sessions, "app", settings_snapshot(settings),
+            change_note="trader startup snapshot",
+        )
+
+        # Distributed lock — only one trader instance (NFR-4)
+        lock_key = "cryptobot:trader:lock"
+        import redis.asyncio as aioredis
+
+        lock_redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        acquired = await lock_redis.set(
+            lock_key, "1", nx=True, ex=settings.trader_lock_ttl_s,
+        )
+        if not acquired:
+            await lock_redis.aclose()
+            raise RuntimeError(
+                "Another trader instance holds the lock — refusing to start"
+            )
+
+        async def _renew_lock() -> None:
+            while True:
+                await asyncio.sleep(max(5, settings.trader_lock_ttl_s // 3))
+                await lock_redis.expire(lock_key, settings.trader_lock_ttl_s)
+
+        lock_task = asyncio.create_task(_renew_lock())
+
+        from cryptobot.runtime.tick_cache import TickCache
+
+        tick_cache = TickCache(settings.redis_url)
 
         # Seed history so strategies have warmup immediately
         for symbol in settings.trading_pairs:
@@ -313,15 +432,50 @@ class PaperTradingService:
                 bars = await load_db(self._sessions, symbol, interval)
                 if bars:
                     self.runtime.seed_history(symbol, interval, bars)
-        self.runtime.seed_equity(float(settings.paper_starting_balance_quote))
         logger.info("paper_trading_started", pairs=settings.trading_pairs,
                     strategies=[s.spec.name for s in self.runtime.strategies])
 
+        async def _refresh_exchange_rules() -> None:
+            while True:
+                await asyncio.sleep(settings.exchange_info_refresh_s)
+                try:
+                    rules = await self._adapter.get_exchange_rules()
+                    broker = self.runtime.broker
+                    if hasattr(broker, "_rules"):
+                        broker._rules = rules.symbols  # noqa: SLF001
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("exchange_info_refresh_failed", error=type(exc).__name__)
+
+        rules_task = asyncio.create_task(_refresh_exchange_rules())
+
+        async def _estop_poller() -> None:
+            while True:
+                await asyncio.sleep(2)
+                try:
+                    ctrl = await self._controls.state()
+                    if ctrl.emergency_stop and self.runtime._positions:
+                        await self.runtime.execute_emergency_stop()
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("estop_poller_failed", error=type(exc).__name__)
+
+        estop_task = asyncio.create_task(_estop_poller())
         flusher = asyncio.create_task(self._flush_loop())
         try:
             async for event in self._adapter.market_stream(
-                settings.trading_pairs, settings.candle_intervals
+                settings.trading_pairs, settings.candle_intervals,
+                include_trades=settings.ws_include_trades,
+                include_depth=settings.ws_include_depth,
             ):
+                self._last_ws_at = event.received_at
+                if event.type is MarketEventType.TRADE:
+                    payload = event.payload
+                    await tick_cache.set_trade(
+                        event.symbol, str(payload.get("price", "")),
+                        str(payload.get("qty", "")),
+                    )
+                    continue
+                if event.type is MarketEventType.DEPTH:
+                    continue
                 if (
                     event.type is MarketEventType.KLINE
                     and event.candle is not None
@@ -331,6 +485,12 @@ class PaperTradingService:
                     await self._maybe_daily_report()
         finally:
             flusher.cancel()
+            rules_task.cancel()
+            estop_task.cancel()
+            lock_task.cancel()
+            await lock_redis.delete(lock_key)
+            await lock_redis.aclose()
+            await tick_cache.close()
             await self._flush()
             await self._controls.close()
 

@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     max_clock_drift_ms: int = 1000
     market_data_stale_after_s: float = 10.0
     exchange_info_refresh_s: int = 3600
+    ws_include_trades: bool = Field(default=True, alias="CRYPTOBOT_WS_INCLUDE_TRADES")
+    ws_include_depth: bool = Field(default=True, alias="CRYPTOBOT_WS_INCLUDE_DEPTH")
+    trader_lock_ttl_s: int = Field(default=30, alias="CRYPTOBOT_TRADER_LOCK_TTL_S")
 
     # Paper account
     paper_starting_balance_quote: Decimal = Decimal("10000")
@@ -84,11 +87,12 @@ class Settings(BaseSettings):
     # ── execution policy (cost control) ─────────────────────────────
     # market = certain fills, pays spread+slippage; maker_limit = cheaper
     # (maker fee only) but may not fill. Exits always use market orders.
-    entry_order_style: str = Field(default="market", alias="ENTRY_ORDER_STYLE")
+    entry_order_style: str = Field(default="maker_limit", alias="ENTRY_ORDER_STYLE")
     maker_limit_offset_bps: float = Field(default=2.0, alias="MAKER_LIMIT_OFFSET_BPS")
     maker_ttl_bars: int = Field(default=3, alias="MAKER_TTL_BARS")
     bnb_fee_discount: float = Field(default=0.0, alias="BNB_FEE_DISCOUNT")
     small_account_guardrails: bool = Field(default=True, alias="SMALL_ACCOUNT_GUARDRAILS")
+    model_registry_dir: str = Field(default="./model_registry", alias="MODEL_REGISTRY_DIR")
 
     # ── AI assistant (optional; trading never depends on it) ────────
     anthropic_api_key: SecretStr = Field(default=SecretStr(""), alias="ANTHROPIC_API_KEY")

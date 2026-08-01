@@ -188,6 +188,7 @@ class OrderState(BaseModel):
 class MarketEventType(StrEnum):
     KLINE = "kline"
     TRADE = "trade"
+    DEPTH = "depth"
 
 
 class MarketEvent(BaseModel):

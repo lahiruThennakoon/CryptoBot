@@ -35,7 +35,7 @@
 ### FR-4 Signal validation & risk (veto authority)
 - FR-4.1 Every signal passes: signal-validation (data quality, regime fit, confidence threshold) → cost gate (expected return after conservative costs > safety margin) → risk engine (all limits in `risk-policy.md`).
 - FR-4.2 Risk engine may reject any signal; every rejection is persisted with a machine-readable reason code.
-- FR-4.3 Breach of daily-loss, drawdown, or infrastructure limits → trading halts (no new entries; exits still managed) and requires explicit operator review to resume.
+- FR-4.3 Breach of daily-loss, drawdown, or infrastructure limits → trading halts (no new entries; exits still managed) and requires explicit operator review via `POST /controls/clear-halt` to resume.
 
 ### FR-5 Position sizing & portfolio
 - FR-5.1 Sizing from configured risk-per-trade %, stop distance, and exchange filters; rounded down to step size; verified against min notional.
@@ -46,7 +46,7 @@
 - FR-6.1 Market and limit orders with configurable execution policy; slippage estimated pre-submission from order-book depth.
 - FR-6.2 Limit orders have TTL; cancel/replace under controlled rules; no stale orders left indefinitely.
 - FR-6.3 Final state confirmed from the exchange (user-data stream + REST query), not the initial response.
-- FR-6.4 Emergency stop: cancel all open orders, disable new orders, alert operator — reachable from dashboard and CLI.
+- FR-6.4 Emergency stop: close all open positions, disable new orders, alert operator — reachable from dashboard (`POST /controls/emergency-stop`); resume clears estop via `POST /controls/resume` (arm/confirm).
 
 ### FR-7 Backtesting
 - FR-7.1 Event-driven backtester consuming the same `Strategy` and `RiskEngine` interfaces as paper/live paths.
@@ -71,7 +71,7 @@
 - FR-10.3 Notification service (e.g., Telegram/email/webhook) for alerts listed in FR-12.4.
 
 ### FR-11 Daily workflow
-1. Health checks (API, WebSocket, DB, time sync) → 2. Load account state → 3. Reconcile balances/positions/orders → 4. Evaluate market regime → 5. Select regime-appropriate enabled strategies → 6. Compute signals → 7. Estimate costs → 8. Risk validation → 9. Execute qualifying trades only → 10. Manage open positions → 11. Halt on limits → 12. End-of-day report.
+1. Health checks (API, WebSocket, DB, time sync) → 2. **Restore account state from DB** → 3. **Reconcile balances/positions/orders** → 4. Evaluate market regime → 5. Select enabled pairs → 6. **Rank opportunities in batch** (all strategies score; top candidate enters) → 7. Estimate costs → 8. Risk validation → 9. Execute qualifying trades only → 10. Manage open positions (strategy exits) → 11. Halt on limits → 12. End-of-day report.
 - FR-11.1 EOD report includes: starting/ending equity, realized & unrealized PnL, gross result, fees, slippage, net result, % return, max intraday drawdown, trade count, wins/losses, avg holding time, rejected signals + reasons, open positions, per-strategy performance, model version, config version, infra incidents, risk-limit triggers.
 - FR-11.2 No minimum trade count exists anywhere in the system.
 
@@ -128,3 +128,36 @@ All must be true; passing implies no future-profit guarantee.
 - [x] API design (`architecture.md` §6)
 - [x] Roadmap with per-phase acceptance criteria (`roadmap.md`)
 - [x] Assumed decisions listed for owner review (`roadmap.md` §7)
+
+> **Note:** Phase 1 acceptance covers **documentation deliverables**. Runtime implementation status is tracked separately in §5.
+
+## 5. Implementation status (2026-08-02)
+
+Legend: **Done** · **Partial** · **Deferred** (Phase 6+) · **Blocked**
+
+| Area | Status | Notes |
+|------|--------|-------|
+| FR-1 Market data | Partial | Kline WS + REST backfill + Redis tick cache + trade/depth WS streams done; per-pair staleness flags deferred |
+| FR-2 Exchange | Partial | Testnet adapter done; startup reconciliation done; user-data stream deferred |
+| FR-3 Strategies | Done | Five baselines + ranked batch entry path (`docs/spec-v2`) |
+| FR-4 Risk | Done | Full veto pipeline; Redis-backed halt + `POST /controls/clear-halt` |
+| FR-5–6 Orders | Partial | Maker limit (paper); testnet market-only; estop resume fixed |
+| FR-7 Backtest | Done | Event-driven; walk-forward; metrics |
+| FR-8 Paper | Done | Persistent account restored from DB on restart |
+| FR-9 ML | Partial | Registry/promotion/inference done; runtime drift demotion deferred |
+| FR-10 Dashboard | Partial | Core panels + controls; model version display deferred |
+| FR-11 Workflow | Partial | Ranked batch replaces per-strategy entries (step 6); reconciliation at startup |
+| FR-12 Observability | Partial | `/metrics` Prometheus endpoint; correlation IDs partial |
+| FR-13 Security | Done | Fail-closed defaults; live structurally **Blocked** until Phase 6 |
+| NFR-4 | Done | Redis distributed trader lock |
+| NFR-8 | Done | `config_versions` written on startup and session changes |
+| Live trading | **Blocked** | No live broker; CLI refuses `mode=live` by design |
+
+### Additional shipped scope (not in original FR list)
+
+- **Ranked batch execution** — entries via `DecisionScorer` + `rank_opportunities`; strategies exit-only
+- **Analysis-only mode** — `EXECUTION_MODE=analysis` runs pipeline without orders
+- **AI trading assistant** — optional dashboard panel (`ANTHROPIC_API_KEY`)
+- **Pair screener / auto-manage** — discovery and enable/disable workflows
+- **Session / profit-target policy** — trading hours and daily target protection
+- **Demo pulse strategy** — `cryptobot trade --demo` for pipeline smoke tests

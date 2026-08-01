@@ -73,6 +73,9 @@ class FeatureBuilder:
         Label = 1 when the forward `horizon`-bar return exceeds
         `label_cost_threshold` (a conservative round-trip cost), else 0.
         Rows without complete features or labels are dropped.
+
+        When horizon=0, labels are omitted and the latest complete feature
+        row is retained (for live inference).
         """
         s = self.spec
         closes = [float(b.close) for b in bars]  # type: ignore[arg-type]
@@ -130,26 +133,43 @@ class FeatureBuilder:
 
         names = sorted(columns)
         labels_all: list[int | None] = [None] * n
-        for i in range(n - horizon):
-            if closes[i] > 0:
-                fwd = closes[i + horizon] / closes[i] - 1
-                labels_all[i] = 1 if fwd > label_cost_threshold else 0
+        if horizon > 0:
+            for i in range(n - horizon):
+                if closes[i] > 0:
+                    fwd = closes[i + horizon] / closes[i] - 1
+                    labels_all[i] = 1 if fwd > label_cost_threshold else 0
+        else:
+            labels_all = [0] * n
 
         rows: list[list[float]] = []
         bar_indices: list[int] = []
         labels: list[int] = []
         for i in range(n):
             values = [columns[name][i] for name in names]
-            if any(v is None for v in values) or labels_all[i] is None:
+            if any(v is None for v in values):
+                continue
+            if horizon > 0 and labels_all[i] is None:
                 continue
             rows.append([float(v) for v in values])  # type: ignore[arg-type]
             bar_indices.append(i)
-            labels.append(int(labels_all[i]))  # type: ignore[arg-type]
+            if horizon > 0:
+                labels.append(int(labels_all[i]))  # type: ignore[arg-type]
 
         return FeatureMatrix(
             names=names, rows=rows, bar_indices=bar_indices,
             version=self.spec.version, labels=labels,
         )
+
+    def inference_row(
+        self,
+        bars: Sequence[BarLike],
+        btc_closes: Sequence[float] | None = None,
+    ) -> list[float] | None:
+        """Feature vector for the latest bar (no label required)."""
+        matrix = self.build(bars, btc_closes=btc_closes, horizon=0)
+        if not matrix.rows:
+            return None
+        return matrix.rows[-1]
 
 
 def _rolling_corr(

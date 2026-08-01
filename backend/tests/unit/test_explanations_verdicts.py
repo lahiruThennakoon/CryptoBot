@@ -22,11 +22,15 @@ class TestExplanationsCoverage:
             assert code in EXPLANATIONS, f"no plain-language entry for {code}"
 
     def test_explanations_avoid_jargon(self):
+        import re
+
         banned = ["atr", "sma", "rsi", "notional", "regime_", "quantile"]
         for exp in EXPLANATIONS.values():
             lower = exp.text.lower()
             for word in banned:
-                assert word not in lower, f"jargon '{word}' in: {exp.title}"
+                assert not re.search(rf"\b{re.escape(word)}\b", lower), (
+                    f"jargon '{word}' in: {exp.title}"
+                )
 
     def test_unknown_code_degrades_gracefully(self):
         assert explain("SOME_FUTURE_CODE").title

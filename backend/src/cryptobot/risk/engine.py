@@ -54,6 +54,11 @@ class RiskState:
         self.equity = equity
         self.high_water_mark = max(self.high_water_mark, equity)
 
+    def clear_halt(self) -> None:
+        """Operator reviewed and cleared a portfolio halt (FR-4.3)."""
+        self.halted = False
+        self.halt_reason = ""
+
 
 @dataclass(frozen=True)
 class RiskDecision:

@@ -236,9 +236,17 @@ class BinanceSpotAdapter:
 
     # ── streaming ────────────────────────────────────────────────────
     def market_stream(
-        self, symbols: list[str], intervals: list[str]
+        self,
+        symbols: list[str],
+        intervals: list[str],
+        *,
+        include_trades: bool = False,
+        include_depth: bool = False,
     ) -> AsyncIterator[MarketEvent]:
-        stream = BinanceMarketStream(self._ws_base_url, symbols, intervals)
+        stream = BinanceMarketStream(
+            self._ws_base_url, symbols, intervals,
+            include_trades=include_trades, include_depth=include_depth,
+        )
         return stream.events()
 
     async def close(self) -> None:

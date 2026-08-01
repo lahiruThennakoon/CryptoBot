@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from sqlalchemy import text
 
 from cryptobot import __version__
@@ -97,6 +97,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("api_started", mode=settings.mode.value,
                 execution_mode=settings.execution_mode, version=__version__)
+    from cryptobot.config.versioning import record_config_change, settings_snapshot
+
+    await record_config_change(
+        app.state.sessions, "app", settings_snapshot(settings),
+        change_note="api startup snapshot",
+    )
     yield
     await venue_client.close()
     await stats_client.close()
@@ -120,6 +126,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(api_router)
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus metrics (FR-12.3)."""
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/v1/health")
