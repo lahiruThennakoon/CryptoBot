@@ -23,6 +23,7 @@ class RiskConfig:
     max_consecutive_losses: int = 5
     min_confidence: float = 0.6
     min_stop_distance_pct: float = 0.001   # stop must be a real stop
+    fixed_entry_notional_usd: float = 0.0  # 0 = risk-based only (FR-5.4)
 
 
 @dataclass
@@ -135,6 +136,14 @@ class BasicRiskEngine:
         if headroom <= 0:
             return RiskDecision.reject("MAX_EXPOSURE", f"exposure={state.exposure_notional:.2f}")
         qty = min(qty, headroom / price)
+
+        if cfg.fixed_entry_notional_usd > 0:
+            if cfg.fixed_entry_notional_usd < min_notional:
+                return RiskDecision.reject(
+                    "FIXED_NOTIONAL_BELOW_MIN",
+                    f"fixed=${cfg.fixed_entry_notional_usd:.2f} < min_notional=${min_notional:.2f}",
+                )
+            qty = min(qty, cfg.fixed_entry_notional_usd / price)
 
         qty = qty - (qty % step_size) if step_size > 0 else qty  # round DOWN
         if qty < min_qty or qty <= 0:

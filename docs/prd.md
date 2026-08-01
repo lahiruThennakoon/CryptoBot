@@ -36,11 +36,18 @@
 - FR-4.1 Every signal passes: signal-validation (data quality, regime fit, confidence threshold) → cost gate (expected return after conservative costs > safety margin) → risk engine (all limits in `risk-policy.md`).
 - FR-4.2 Risk engine may reject any signal; every rejection is persisted with a machine-readable reason code.
 - FR-4.3 Breach of daily-loss, drawdown, or infrastructure limits → trading halts (no new entries; exits still managed) and requires explicit operator review via `POST /controls/clear-halt` to resume.
+- FR-4.4 **Near-miss transparency (learning).** When the top ranked candidate is rejected only because expected edge or confidence falls within a configurable margin of passing (default: within 0.05 absolute of the threshold), persist it as a near-miss with: symbol, scores, required vs actual edge, rejection code, and a plain-language gap summary. Surface via dashboard, EOD report (top N per day), and read-only API/assistant tools. **Does not relax any gate** — visibility for operator learning only.
 
 ### FR-5 Position sizing & portfolio
 - FR-5.1 Sizing from configured risk-per-trade %, stop distance, and exchange filters; rounded down to step size; verified against min notional.
 - FR-5.2 Portfolio tracker maintains balances, positions, exposure, realized/unrealized PnL, recomputed after every fill.
 - FR-5.3 Never sell more than available balance; never exceed max exposure or max simultaneous positions.
+- FR-5.4 **Fixed entry notional (optional).** Operator may set a quote-currency cap per new entry (e.g. $10, $25). When enabled:
+  - **Target mode:** each approved entry uses `min(fixed_notional, risk-based size, max_position_pct cap, exposure headroom)` — never exceeds the fixed amount; may be lower when portfolio limits bind.
+  - **Validation:** reject entries when `fixed_notional` is below the pair's exchange min notional; surface a clear reason code (`FIXED_NOTIONAL_BELOW_MIN`).
+  - **Profit discipline unchanged:** fixed sizing does not bypass FR-4.1 cost gate, confidence thresholds, or ranked-batch selection — the bot still skips trades that cannot clear costs + safety margin.
+  - **Config:** `FIXED_ENTRY_NOTIONAL_USD` (0 or unset = risk-based only); changes versioned in `config_versions` and visible on dashboard/API.
+  - **Small accounts:** when fixed notional implies cost drag above guardrail thresholds, required edge and trade-frequency limits from `small_account` mode still apply (costs are % of notional, not account).
 
 ### FR-6 Order management & execution
 - FR-6.1 Market and limit orders with configurable execution policy; slippage estimated pre-submission from order-book depth.
@@ -57,6 +64,7 @@
 ### FR-8 Paper trading
 - FR-8.1 Simulator fills against live market data with the same cost model as backtesting; persistent paper account.
 - FR-8.2 Identical daily workflow to live mode (see FR-11).
+- FR-8.3 **Testnet learning path:** `EXECUTION_MODE=testnet` uses real testnet order submission with operator-configured fixed entry notional (FR-5.4); paper balance settings do not apply — testnet exchange balance is source of truth, reconciled on startup (FR-2.8).
 
 ### FR-9 Machine learning (Phase 5, gated)
 - FR-9.1 Experimentation framework: GBDT, logistic regression baseline, random forests, time-series classification, regime detection, volatility forecasting, anomaly detection.
@@ -72,7 +80,7 @@
 
 ### FR-11 Daily workflow
 1. Health checks (API, WebSocket, DB, time sync) → 2. **Restore account state from DB** → 3. **Reconcile balances/positions/orders** → 4. Evaluate market regime → 5. Select enabled pairs → 6. **Rank opportunities in batch** (all strategies score; top candidate enters) → 7. Estimate costs → 8. Risk validation → 9. Execute qualifying trades only → 10. Manage open positions (strategy exits) → 11. Halt on limits → 12. End-of-day report.
-- FR-11.1 EOD report includes: starting/ending equity, realized & unrealized PnL, gross result, fees, slippage, net result, % return, max intraday drawdown, trade count, wins/losses, avg holding time, rejected signals + reasons, open positions, per-strategy performance, model version, config version, infra incidents, risk-limit triggers.
+- FR-11.1 EOD report includes: starting/ending equity, realized & unrealized PnL, gross result, fees, slippage, net result, % return, max intraday drawdown, trade count, wins/losses, avg holding time, rejected signals + reasons, **near-miss candidates (FR-4.4)**, open positions, per-strategy performance, model version, config version, infra incidents, risk-limit triggers.
 - FR-11.2 No minimum trade count exists anywhere in the system.
 
 ### FR-12 Observability & audit
@@ -99,6 +107,25 @@ See `threat-model.md`. Highlights: no hard-coded keys; env/secrets manager only;
 | NFR-9 | Docker Compose for local dev; CI pipeline (lint, type-check, tests) on every commit |
 | NFR-10 | Secure defaults: paper mode, live disabled, conservative risk limits |
 | NFR-11 | All timestamps stored UTC; monetary values as `NUMERIC` (never float) in DB, `Decimal` in Python |
+
+## 2.1 Operator learning phase — testnet ($200 equivalent)
+
+> **Scope:** Lahtlk · fixed $10/trade · 1–2 month learning window · real-money intent deferred until graduation (§3).
+
+This phase optimizes for **learning and operational confidence**, not monthly PnL targets. Flat or small loss is an acceptable outcome if feedback loops work.
+
+| ID | Success metric | Target | Counter-metric (failure signal) |
+|----|----------------|--------|----------------------------------|
+| SM-L1 | Execution mode | `EXECUTION_MODE=testnet` with Binance testnet keys; **not live** | Any live order submission |
+| SM-L2 | Account scale | Testnet balance treated as **~$200 USDT equivalent**; `FIXED_ENTRY_NOTIONAL_USD=10` | Position size drifts above $10 without operator change |
+| SM-L3 | Learning feedback | Review EOD report ≥ **5 days/week**; near-misses (FR-4.4) explain skips | 14+ consecutive days with zero trades *and* zero near-misses (pipeline may be broken or config too tight) |
+| SM-L4 | PnL tolerance | End-of-phase equity **≥ $170** (−15% max) *or* operator ends early with documented learnings | Drawdown > 15% without halt firing, or unexplained balance mismatch |
+| SM-L5 | Trade discipline | Bot only enters when cost gate + guardrails pass; operator does **not** override gates to force trades | Manual gate bypass; revenge sizing |
+| SM-L6 | Phase duration | **30–60 days** on testnet; extend to 90 only if SM-L3–L5 are met but GC-4 not yet | Declaring "ready for live" before §3 graduation criteria |
+
+**Pairs:** BTCUSDT + ETHUSDT only during learning phase.
+
+**Exit ramp:** After SM-L6 + §3 graduation criteria met → consider live with same $10 cap (Phase 6 gate still applies).
 
 ## 3. Paper-trading graduation criteria (gate to *considering* live)
 
@@ -140,8 +167,8 @@ Legend: **Done** · **Partial** · **Deferred** (Phase 6+) · **Blocked**
 | FR-1 Market data | Partial | Kline WS + REST backfill + Redis tick cache + trade/depth WS streams done; per-pair staleness flags deferred |
 | FR-2 Exchange | Partial | Testnet adapter done; startup reconciliation done; user-data stream deferred |
 | FR-3 Strategies | Done | Five baselines + ranked batch entry path (`docs/spec-v2`) |
-| FR-4 Risk | Done | Full veto pipeline; Redis-backed halt + `POST /controls/clear-halt` |
-| FR-5–6 Orders | Partial | Maker limit (paper); testnet market-only; estop resume fixed |
+| FR-4 Risk | Done | Full veto pipeline; Redis-backed halt + `POST /controls/clear-halt`; FR-4.4 near-miss transparency |
+| FR-5–6 Orders | Partial | Maker limit (paper); testnet market-only; estop resume fixed; **FR-5.4 fixed notional Done** |
 | FR-7 Backtest | Done | Event-driven; walk-forward; metrics |
 | FR-8 Paper | Done | Persistent account restored from DB on restart |
 | FR-9 ML | Partial | Registry/promotion/inference done; runtime drift demotion deferred |

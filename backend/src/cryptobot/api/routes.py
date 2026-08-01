@@ -146,6 +146,33 @@ async def signals(request: Request, limit: int = 100) -> list[dict[str, Any]]:
     } for r in rows]
 
 
+@router.get("/signals/near-misses")
+async def near_miss_signals(request: Request, hours: int = 24) -> dict[str, Any]:
+    """Top ranked candidates that almost passed a gate (FR-4.4)."""
+    since = datetime.now(UTC) - timedelta(hours=min(hours, 168))
+    async with _sessions(request)() as session:
+        rows = (await session.execute(
+            select(SignalRow).where(
+                SignalRow.outcome == "near_miss",
+                SignalRow.created_at >= since,
+            ).order_by(desc(SignalRow.created_at)).limit(50)
+        )).scalars().all()
+    return {
+        "hours": hours,
+        "count": len(rows),
+        "near_misses": [
+            {
+                "symbol": r.symbol,
+                "code": r.rejection_code,
+                "confidence": float(r.confidence),
+                "detail": r.detail,
+                "at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/risk/events")
 async def risk_events(request: Request, limit: int = 50) -> list[dict[str, Any]]:
     async with _sessions(request)() as session:

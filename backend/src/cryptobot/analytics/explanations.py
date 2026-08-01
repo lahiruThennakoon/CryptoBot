@@ -36,6 +36,25 @@ EXPLANATIONS: dict[str, Explanation] = {
         "minimum bar. Weak signals are statistically closer to coin flips, and coin "
         "flips lose money once you pay fees.",
     ),
+    "NEAR_MISS_COST_GATE": Explanation(
+        "Almost cleared the cost bar",
+        "This was the best candidate today, but expected profit fell just short of "
+        "covering fees and the safety buffer. The skip was correct — learning signal "
+        "only, not a missed profit.",
+        is_protective=True,
+    ),
+    "NEAR_MISS_CONFIDENCE": Explanation(
+        "Almost strong enough",
+        "Confidence was close to the minimum bar but not quite there. The bot skipped "
+        "rather than take a borderline setup.",
+        is_protective=True,
+    ),
+    "FIXED_NOTIONAL_BELOW_MIN": Explanation(
+        "Fixed trade size too small for the exchange",
+        "Your configured fixed entry amount is below this pair's exchange minimum "
+        "order size. Raise FIXED_ENTRY_NOTIONAL_USD or pick a different pair.",
+        is_protective=False,
+    ),
     "COOLDOWN": Explanation(
         "Cooling off after a recent loss",
         "This strategy recently closed a losing trade on this pair, so it is required "

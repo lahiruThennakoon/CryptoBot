@@ -54,6 +54,7 @@ def settings_snapshot(settings: object) -> dict:
         "trading_pairs": settings.trading_pairs,
         "candle_intervals": settings.candle_intervals,
         "entry_order_style": settings.entry_order_style,
+        "fixed_entry_notional_usd": str(settings.fixed_entry_notional_usd),
         "paper_starting_balance_quote": str(settings.paper_starting_balance_quote),
         "market_data_stale_after_s": settings.market_data_stale_after_s,
         "ws_include_trades": settings.ws_include_trades,

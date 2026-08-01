@@ -94,7 +94,9 @@ class PaperTradingService:
                 bnb_discount=settings.bnb_fee_discount,
             )
             demo_gates = None
-            risk = BasicRiskEngine()
+            risk = BasicRiskEngine(RiskConfig(
+                fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
+            ))
 
         costs = effective_costs(CostModel(), policy)
 
@@ -157,6 +159,8 @@ class PaperTradingService:
             analysis_only=settings.execution_mode == "analysis",
             loss_cooldown_hours=0.03 if demo_mode else 1.0,   # ~2 min in demo
             stale_after_s=settings.market_data_stale_after_s,
+            near_miss_confidence_margin=settings.near_miss_confidence_margin,
+            near_miss_edge_margin=settings.near_miss_edge_margin,
         )
 
         async def _market_context(symbol: str, bars: list) -> object:
@@ -291,7 +295,27 @@ class PaperTradingService:
         if today != self._current_day:
             report = dict(self.runtime.snapshot())
             report["report_for"] = self._current_day
+            from sqlalchemy import select as _sel
+
+            day_start = datetime.fromisoformat(f"{self._current_day}T00:00:00+00:00")
             async with self._sessions() as session:
+                near = (await session.execute(
+                    _sel(SignalRow).where(
+                        SignalRow.account_id == self._account_id,
+                        SignalRow.outcome == "near_miss",
+                        SignalRow.created_at >= day_start,
+                    ).order_by(SignalRow.created_at.desc()).limit(10)
+                )).scalars().all()
+                report["near_misses"] = [
+                    {
+                        "symbol": r.symbol,
+                        "code": r.rejection_code,
+                        "confidence": float(r.confidence),
+                        "detail": r.detail,
+                        "at": r.created_at.isoformat(),
+                    }
+                    for r in near
+                ]
                 session.add(DailyReportRow(
                     account_id=self._account_id, report_date=self._current_day,
                     content=report,
@@ -351,6 +375,26 @@ class PaperTradingService:
             self.runtime._risk_state.halt_reason = halt.detail
         self.runtime.session_state = SessionState(day_start_equity=equity)
         logger.info("state_restored", **restore_report.__dict__)
+
+        from cryptobot.risk.engine import RiskConfig
+        from cryptobot.risk.small_account import apply_small_account_guardrails
+
+        risk_cfg = RiskConfig(
+            fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
+        )
+        if settings.small_account_guardrails:
+            gr = apply_small_account_guardrails(
+                risk_cfg, equity, self.runtime.costs.round_trip_fraction,
+            )
+            risk_cfg = gr.config
+        self.runtime.risk = BasicRiskEngine(risk_cfg)
+        logger.info(
+            "risk_config_applied",
+            equity=equity,
+            fixed_notional=risk_cfg.fixed_entry_notional_usd,
+            max_positions=risk_cfg.max_positions,
+            max_trades_per_day=risk_cfg.max_trades_per_day,
+        )
 
         if settings.execution_mode == "testnet":
             from cryptobot.exchange.testnet_broker import TestnetBroker

@@ -103,6 +103,8 @@ class TradingRuntime:
     execution_policy: object | None = None
     loss_cooldown_hours: float = 1.0
     live_costs: object | None = None
+    near_miss_confidence_margin: float = 0.05
+    near_miss_edge_margin: float = 0.001
 
     _history: dict[tuple[str, str], list[Bar]] = field(default_factory=lambda: defaultdict(list))
     _positions: dict[str, OpenPosition] = field(default_factory=dict)
@@ -255,6 +257,14 @@ class TradingRuntime:
                 continue
             await self._execute_ranked_entry(opp.record)
 
+    def _intended_notional(self) -> float:
+        """Quote notional for cost/slippage estimates (FR-5.4)."""
+        cap = self._risk_state.equity * self.risk.config.max_position_pct
+        fixed = self.risk.config.fixed_entry_notional_usd
+        if fixed > 0:
+            return min(fixed, cap) if self._risk_state.equity > 0 else fixed
+        return cap
+
     async def _build_market_context(self, symbol: str, bars: list[Bar]) -> object:
         from cryptobot.decision.scoring import MarketContext
 
@@ -334,7 +344,7 @@ class TradingRuntime:
         costs = self.costs
         cost_note = ""
         if self.live_costs is not None:
-            intended_notional = float(self._risk_state.equity) * self.risk.config.max_position_pct
+            intended_notional = self._intended_notional()
             try:
                 basis = await self.live_costs(symbol, intended_notional)  # type: ignore[operator]
                 costs = basis.model
@@ -345,9 +355,16 @@ class TradingRuntime:
                 cost_note = "live cost lookup failed — conservative defaults used"
 
         if not costs.passes_cost_gate(edge):
-            self._signal(symbol, RANKED_ENTRY_STRATEGY, "buy", record.confidence,
-                         "unknown", "rejected_cost", "COST_GATE",
-                         f"edge={edge:.4f} vs costs={costs.round_trip_fraction:.4f}; {cost_note}")
+            from cryptobot.risk.near_miss import near_miss_cost_gate
+
+            nm = near_miss_cost_gate(edge, costs, self.near_miss_edge_margin)
+            if nm is not None:
+                self._signal(symbol, RANKED_ENTRY_STRATEGY, "buy", record.confidence,
+                             "unknown", "near_miss", nm.rejection_code, nm.summary)
+            else:
+                self._signal(symbol, RANKED_ENTRY_STRATEGY, "buy", record.confidence,
+                             "unknown", "rejected_cost", "COST_GATE",
+                             f"edge={edge:.4f} vs costs={costs.round_trip_fraction:.4f}; {cost_note}")
             return
 
         decision = self.risk.evaluate_entry(
@@ -355,6 +372,17 @@ class TradingRuntime:
             price=float(price), stop_price=record.stop_price,
         )
         if not decision.approved:
+            from cryptobot.risk.near_miss import near_miss_confidence
+
+            if decision.reason_code == "LOW_CONFIDENCE":
+                nm = near_miss_confidence(
+                    record.confidence, self.risk.config.min_confidence,
+                    self.near_miss_confidence_margin,
+                )
+                if nm is not None:
+                    self._signal(symbol, RANKED_ENTRY_STRATEGY, "buy", record.confidence,
+                                 "unknown", "near_miss", nm.rejection_code, nm.summary)
+                    return
             self._signal(symbol, RANKED_ENTRY_STRATEGY, "buy", record.confidence,
                          "unknown", "rejected_risk", decision.reason_code, decision.detail)
             if decision.reason_code in ("DAILY_LOSS_LIMIT", "MAX_DRAWDOWN", "CONSECUTIVE_LOSSES"):
