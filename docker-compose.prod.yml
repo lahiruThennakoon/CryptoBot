@@ -29,3 +29,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://cryptobot:${POSTGRES_PASSWORD:-change_me}@postgres:5432/cryptobot
       REDIS_URL: redis://redis:6379/0
     restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      args:
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+        NEXT_PUBLIC_API_TOKEN: ${API_SECRET_KEY}
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+    depends_on:
+      - api
