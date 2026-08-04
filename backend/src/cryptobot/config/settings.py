@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, alias="API_PORT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    # --- Notifications (optional; best-effort, never blocks trading) ---
+    telegram_bot_token: SecretStr = Field(default=SecretStr(""), alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+    alert_webhook_url: str = Field(default="", alias="ALERT_WEBHOOK_URL")
+
     # --- Trading scope ---
     trading_pairs: list[str] = Field(default=["BTCUSDT", "ETHUSDT"])
     candle_intervals: list[str] = Field(default=["1m", "5m", "15m", "1h", "4h"])

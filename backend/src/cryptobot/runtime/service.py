@@ -25,7 +25,7 @@ from cryptobot.db.models import (
 from cryptobot.db.session import SessionFactory
 from cryptobot.exchange.binance.adapter import BinanceSpotAdapter
 from cryptobot.exchange.models import MarketEventType
-from cryptobot.notifications.service import Notifier
+from cryptobot.notifications.service import Notifier, format_daily_report, notifier_from_settings
 from cryptobot.paper.account import PaperAccount
 from cryptobot.paper.broker import PaperBroker
 from cryptobot.risk.engine import BasicRiskEngine
@@ -151,7 +151,7 @@ class PaperTradingService:
             live_costs=_live_costs,
             quote_asset=settings.paper_quote_asset,
             events=self._make_events(),
-            notifier=Notifier(),  # channels configured via env in _bootstrap
+            notifier=notifier_from_settings(settings),
             controls_state=self._controls.state,
             controls=self._controls,
             enabled_pairs=_enabled,
@@ -322,6 +322,14 @@ class PaperTradingService:
                 ))
                 await session.commit()
             logger.info("daily_report_written", date=self._current_day)
+            if self.runtime.notifier is not None:
+                from cryptobot.notifications.service import Severity
+
+                await self.runtime.notifier.send(
+                    f"daily_report_{self._current_day}",
+                    format_daily_report(report),
+                    Severity.INFO,
+                )
             self._current_day = today
 
     # ── main loop ────────────────────────────────────────────────────
