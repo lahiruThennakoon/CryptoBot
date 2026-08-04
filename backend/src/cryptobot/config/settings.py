@@ -10,9 +10,10 @@ import logging
 from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class Settings(BaseSettings):
     alert_webhook_url: str = Field(default="", alias="ALERT_WEBHOOK_URL")
 
     # --- Trading scope ---
-    trading_pairs: list[str] = Field(
+    trading_pairs: Annotated[list[str], NoDecode] = Field(
         default=["BTCUSDT", "ETHUSDT"],
         alias="TRADING_PAIRS",
     )
