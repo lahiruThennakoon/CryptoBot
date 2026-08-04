@@ -11,7 +11,7 @@ from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -74,8 +74,20 @@ class Settings(BaseSettings):
     alert_webhook_url: str = Field(default="", alias="ALERT_WEBHOOK_URL")
 
     # --- Trading scope ---
-    trading_pairs: list[str] = Field(default=["BTCUSDT", "ETHUSDT"])
+    trading_pairs: list[str] = Field(
+        default=["BTCUSDT", "ETHUSDT"],
+        alias="TRADING_PAIRS",
+    )
     candle_intervals: list[str] = Field(default=["1m", "5m", "15m", "1h", "4h"])
+
+    @field_validator("trading_pairs", mode="before")
+    @classmethod
+    def _parse_trading_pairs(cls, value: object) -> list[str]:
+        if isinstance(value, str):
+            return [part.strip().upper() for part in value.split(",") if part.strip()]
+        if isinstance(value, list):
+            return [str(part).strip().upper() for part in value if str(part).strip()]
+        return value  # type: ignore[return-value]
 
     # --- Safety thresholds (engineering defaults; see docs/risk-policy.md) ---
     max_clock_drift_ms: int = 1000

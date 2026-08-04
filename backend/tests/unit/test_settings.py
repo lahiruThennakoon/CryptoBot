@@ -1,6 +1,12 @@
 from cryptobot.config.settings import Mode, Settings
 
 
+class TestTradingPairs:
+    def test_comma_separated_env(self):
+        settings = Settings(_env_file=None, TRADING_PAIRS="btcusdt, ethusdt ,SHIBUSDT")
+        assert settings.trading_pairs == ["BTCUSDT", "ETHUSDT", "SHIBUSDT"]
+
+
 class TestLiveGate:
     def test_default_mode_is_paper(self):
         settings = Settings(_env_file=None)
