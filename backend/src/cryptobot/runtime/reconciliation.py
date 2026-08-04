@@ -87,7 +87,7 @@ async def reconcile_on_startup(
             else:
                 report.checks.append("no open exchange orders")
         except Exception as exc:  # noqa: BLE001
-            report.mismatches.append(f"exchange reconcile failed: {type(exc).__name__}")
+            report.mismatches.append(f"exchange reconcile failed: {type(exc).__name__}: {exc}")
             report.ok = False
     elif execution_mode == "paper":
         report.checks.append("paper mode — DB/memory position check only")

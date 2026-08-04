@@ -405,6 +405,7 @@ class PaperTradingService:
         )
 
         if settings.execution_mode == "testnet":
+            await self._adapter.verify_connectivity()
             from cryptobot.exchange.testnet_broker import TestnetBroker
             from cryptobot.execution.policy import ExecutionPolicy, OrderStyle
 

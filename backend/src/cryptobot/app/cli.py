@@ -351,8 +351,10 @@ def main() -> None:
         print(f"\nCLOCK DRIFT: {exc}")                                     # noqa: T201
         print("Your system clock disagrees with Binance server time. "     # noqa: T201
               "Signed requests are blocked as a safety measure (fail closed).")
-        print("Fix on Windows: Settings → Time & language → Date & time "  # noqa: T201
+        print("Fix on Windows: Settings → Time & language → Date & time "
               "→ 'Sync now', then re-run this command.")
+        print("Fix on Linux/EC2: sudo timedatectl set-ntp true && "
+              "sudo systemctl restart systemd-timesyncd")
         sys.exit(1)
     except ExchangeError as exc:
         print(f"\nEXCHANGE ERROR: {exc}")                                  # noqa: T201
