@@ -446,6 +446,12 @@ class PaperTradingService:
                     f"Mismatches: {'; '.join(reconcile.mismatches[:3])}",
                     Severity.CRITICAL,
                 )
+        else:
+            ctrl = await self._controls.state()
+            if ctrl.risk_halt_reason == "reconciliation_mismatch":
+                await self._controls.clear_risk_halt()
+                self.runtime._risk_state.clear_halt()
+                logger.info("reconciliation_halt_cleared", reason="startup reconcile ok")
 
         from cryptobot.config.versioning import record_config_change, settings_snapshot
 
