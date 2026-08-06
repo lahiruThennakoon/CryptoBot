@@ -5,10 +5,12 @@ from datetime import UTC, datetime, timedelta
 
 from cryptobot.decision.ranking import rank_opportunities, returns_correlation
 from cryptobot.decision.scoring import (
+    AGREEMENT_FLOOR,
     Action,
     DecisionRecord,
     DecisionScorer,
     DecisionStatus,
+    Gates,
     MarketContext,
 )
 from cryptobot.regime.detector import Regime
@@ -59,6 +61,43 @@ class NeverEnter(Strategy):
         return HOLD
 
 
+class AlwaysExit(Strategy):
+    def __init__(self):
+        self.spec = StrategySpec(name="exiter", timeframe="1h", warmup_bars=5,
+                                 max_holding_bars=24, cooldown_bars=0,
+                                 allowed_regimes=frozenset(Regime))
+
+    def on_bar(self, bars, i):
+        return Signal(Intent.EXIT, confidence=1.0, reason="not applicable")
+
+
+class RegimeEnter(Strategy):
+    """Enters at a fixed confidence, restricted to the given regimes."""
+
+    def __init__(self, name, regimes, confidence=0.8):
+        self._confidence = confidence
+        self.spec = StrategySpec(name=name, timeframe="1h", warmup_bars=5,
+                                 max_holding_bars=24, cooldown_bars=0,
+                                 allowed_regimes=frozenset(regimes))
+
+    def on_bar(self, bars, i):
+        price = float(bars[i].close)
+        return Signal(Intent.ENTER_LONG, confidence=self._confidence,
+                      stop_price=price * 0.95, take_profit=price * 1.10)
+
+
+class RegimeHold(Strategy):
+    """Never votes, but declares regime preferences the scorer must ignore."""
+
+    def __init__(self, name, regimes):
+        self.spec = StrategySpec(name=name, timeframe="1h", warmup_bars=5,
+                                 max_holding_bars=24, cooldown_bars=0,
+                                 allowed_regimes=frozenset(regimes))
+
+    def on_bar(self, bars, i):
+        return HOLD
+
+
 class TestScorer:
     def test_stale_data_wins_over_everything(self):
         scorer = DecisionScorer([AlwaysEnter()])
@@ -104,6 +143,64 @@ class TestScorer:
         if no_pos.status in (DecisionStatus.SELL, DecisionStatus.STRONG_SELL):
             assert no_pos.action is Action.NO_TRADE       # spot: nothing to sell
             assert with_pos.action is Action.CLOSE
+
+
+class TestEnsembleVoting:
+    def test_exit_vote_abstains_without_open_position(self):
+        """A strategy with nothing to exit must not vote the score down."""
+        scorer = DecisionScorer([AlwaysExit()])
+        bars = trending_bars()
+        flat = scorer.decide("X", bars, Regime.RANGE, MarketContext())
+        held = scorer.decide("X", bars, Regime.RANGE,
+                             MarketContext(has_open_position=True))
+        assert "ensemble" not in flat.conflicting
+        assert held.conflicting["ensemble"] < 0
+
+    def test_lone_voter_keeps_agreement_floor_of_unanimous(self):
+        """One voter among five is worth less than five, but not negligible."""
+        bars = trending_bars()
+        lone = DecisionScorer(
+            [AlwaysEnter()] + [RegimeHold(f"h{i}", Regime) for i in range(4)]
+        ).decide("X", bars, Regime.TREND_UP, MarketContext())
+        unanimous = DecisionScorer([AlwaysEnter() for _ in range(5)]).decide(
+            "X", bars, Regime.TREND_UP, MarketContext())
+        ratio = lone.supporting["ensemble"] / unanimous.supporting["ensemble"]
+        assert AGREEMENT_FLOOR <= ratio < 1.0
+
+    def test_lone_voter_can_clear_the_buy_threshold(self):
+        """Dilution must not put a confident entry structurally out of reach."""
+        record = DecisionScorer(
+            [AlwaysEnter()] + [RegimeHold(f"h{i}", Regime) for i in range(4)]
+        ).decide("X", trending_bars(), Regime.TREND_UP, MarketContext())
+        assert record.score >= Gates().buy_threshold
+
+    def test_confidence_is_strategy_conviction_not_score_magnitude(self):
+        """min_confidence must gate conviction, not act as a second threshold."""
+        record = DecisionScorer([AlwaysEnter()]).decide(
+            "X", trending_bars(), Regime.TREND_UP, MarketContext())
+        assert record.confidence == 0.9      # AlwaysEnter's own confidence
+
+    def test_confidence_falls_back_to_score_without_votes(self):
+        record = DecisionScorer([NeverEnter()]).decide(
+            "X", trending_bars(), Regime.TREND_UP, MarketContext())
+        assert record.confidence == round(min(1.0, abs(record.score)), 4)
+
+    def test_regime_fit_uses_voters_only(self):
+        """Non-voting strategies' regime preferences must not colour the fit."""
+        strategies = [RegimeEnter("range_only", {Regime.RANGE})] + [
+            RegimeHold(f"trend{i}", {Regime.TREND_UP}) for i in range(4)
+        ]
+        record = DecisionScorer(strategies).decide(
+            "X", trending_bars(), Regime.RANGE, MarketContext())
+        assert record.supporting["regime"] > 0
+
+    def test_regime_fit_penalises_voter_out_of_regime(self):
+        strategies = [RegimeEnter("range_only", {Regime.RANGE})] + [
+            RegimeHold(f"trend{i}", {Regime.TREND_UP}) for i in range(4)
+        ]
+        record = DecisionScorer(strategies).decide(
+            "X", trending_bars(), Regime.TREND_UP, MarketContext())
+        assert record.conflicting["regime"] < 0
 
 
 def buy_record(symbol: str, net: float, stop_frac: float) -> DecisionRecord:

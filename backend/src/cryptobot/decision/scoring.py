@@ -37,6 +37,12 @@ class Action(str, Enum):
     NO_TRADE = "no_trade"
 
 
+# Share of the ensemble weight a lone voter keeps. The remainder is earned by
+# additional strategies agreeing, so breadth still raises the score without a
+# single confident entry being diluted into irrelevance.
+AGREEMENT_FLOOR = 0.6
+
+
 @dataclass(frozen=True)
 class Weights:
     ensemble: float = 0.35
@@ -133,6 +139,7 @@ class DecisionScorer:
 
         # ── strategy ensemble ────────────────────────────────────────
         entry_votes: list[float] = []
+        entry_strategies: list[Strategy] = []
         exit_votes = 0
         stops: list[float] = []
         tps: list[float] = []
@@ -142,6 +149,7 @@ class DecisionScorer:
             signal = strategy.on_bar(bars, i)
             if signal.intent is Intent.ENTER_LONG:
                 entry_votes.append(signal.confidence)
+                entry_strategies.append(strategy)
                 if signal.stop_price:
                     stops.append(signal.stop_price)
                 if signal.take_profit:
@@ -150,9 +158,22 @@ class DecisionScorer:
             elif signal.intent is Intent.EXIT:
                 exit_votes += 1
         n_strats = max(1, len(self._strategies))
-        components["ensemble"] = w.ensemble * (
-            (sum(entry_votes) / n_strats) - (exit_votes / n_strats)
-        )
+        # Average over the strategies that actually voted, then scale by breadth
+        # of agreement. Averaging over the whole roster instead would dilute a
+        # lone confident entry below every usable threshold, because the
+        # strategies are built for deliberately mutually exclusive regimes and
+        # can rarely fire together.
+        long_vote = 0.0
+        if entry_votes:
+            agreement = len(entry_votes) / n_strats
+            long_vote = (sum(entry_votes) / len(entry_votes)) * (
+                AGREEMENT_FLOOR + (1.0 - AGREEMENT_FLOOR) * agreement
+            )
+        # An EXIT from a strategy holding nothing is an abstention, not a bearish
+        # vote: a flat-market strategy reporting "not applicable" must not veto
+        # another strategy's entry.
+        exit_vote = (exit_votes / n_strats) if context.has_open_position else 0.0
+        components["ensemble"] = w.ensemble * (long_vote - exit_vote)
 
         # ── trend: SMA slope + MACD histogram sign ───────────────────
         trend_ma = sma(closes, 50)
@@ -175,11 +196,14 @@ class DecisionScorer:
         if vol_ma:
             components["volume"] = w.volume * max(0.0, min(1.0, volumes[i] / vol_ma - 1.0))
 
-        # ── regime fit (vs strategies that voted to enter) ───────────
-        if entry_votes:
+        # ── regime fit (of the strategies that voted to enter) ───────
+        # Scoring the whole roster would only measure how many strategies happen
+        # to like the current regime — a constant per regime that says nothing
+        # about this signal, and that penalises a valid range entry.
+        if entry_strategies:
             fits = [
                 1.0 if regime in s.spec.allowed_regimes else -1.0
-                for s in self._strategies
+                for s in entry_strategies
             ]
             components["regime"] = w.regime * (sum(fits) / len(fits))
 
@@ -201,7 +225,14 @@ class DecisionScorer:
 
         score = sum(components.values())
         record.score = round(score, 4)
-        record.confidence = round(min(1.0, abs(score)), 4)
+        # Conviction of the voting strategies — deliberately independent of the
+        # score. Deriving it from |score| turned the risk engine's
+        # min_confidence into a second, stricter score threshold that silently
+        # overrode buy_threshold, so loosening the gates had no effect.
+        record.confidence = round(
+            (sum(entry_votes) / len(entry_votes)) if entry_votes else min(1.0, abs(score)),
+            4,
+        )
         record.supporting = {k: round(v, 4) for k, v in components.items() if v > 0}
         record.conflicting = {k: round(v, 4) for k, v in components.items() if v < 0}
 
