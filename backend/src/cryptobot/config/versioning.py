@@ -59,4 +59,6 @@ def settings_snapshot(settings: object) -> dict:
         "market_data_stale_after_s": settings.market_data_stale_after_s,
         "ws_include_trades": settings.ws_include_trades,
         "ws_include_depth": settings.ws_include_depth,
+        "small_account_guardrails": settings.small_account_guardrails,
+        "learning_mode": settings.learning_mode,
     }

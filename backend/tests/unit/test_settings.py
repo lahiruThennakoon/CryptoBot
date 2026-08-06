@@ -7,6 +7,12 @@ class TestTradingPairs:
         assert settings.trading_pairs == ["BTCUSDT", "ETHUSDT", "SHIBUSDT"]
 
 
+class TestLearningMode:
+    def test_learning_mode_env(self):
+        settings = Settings(_env_file=None, CRYPTOBOT_LEARNING_MODE="true")
+        assert settings.learning_mode is True
+
+
 class TestLiveGate:
     def test_default_mode_is_paper(self):
         settings = Settings(_env_file=None)

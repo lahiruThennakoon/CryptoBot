@@ -110,6 +110,7 @@ class Settings(BaseSettings):
     maker_ttl_bars: int = Field(default=3, alias="MAKER_TTL_BARS")
     bnb_fee_discount: float = Field(default=0.0, alias="BNB_FEE_DISCOUNT")
     small_account_guardrails: bool = Field(default=True, alias="SMALL_ACCOUNT_GUARDRAILS")
+    learning_mode: bool = Field(default=False, alias="CRYPTOBOT_LEARNING_MODE")
     fixed_entry_notional_usd: Decimal = Field(default=Decimal("0"), alias="FIXED_ENTRY_NOTIONAL_USD")
     near_miss_confidence_margin: float = Field(default=0.05, alias="NEAR_MISS_CONFIDENCE_MARGIN")
     near_miss_edge_margin: float = Field(default=0.001, alias="NEAR_MISS_EDGE_MARGIN")

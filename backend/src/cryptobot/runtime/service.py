@@ -81,9 +81,17 @@ class PaperTradingService:
         from cryptobot.pairs.service import enabled_symbols
         from cryptobot.risk.engine import RiskConfig
 
+        learning = settings.learning_mode and not demo_mode
+        if learning:
+            logger.warning(
+                "LEARNING_MODE_ACTIVE",
+                detail="Relaxed decision/risk gates for testnet learning — "
+                       "more trades expected, higher fee drag, not graduation evidence.",
+            )
+
         if demo_mode:
             policy = ExecutionPolicy(entry_style=OrderStyle.MARKET)
-            demo_gates = Gates(buy_threshold=0.2, strong_buy_threshold=0.45)
+            scorer_gates = Gates(buy_threshold=0.2, strong_buy_threshold=0.45)
             risk = BasicRiskEngine(RiskConfig(min_confidence=0.4))
         else:
             policy = ExecutionPolicy(
@@ -93,12 +101,24 @@ class PaperTradingService:
                 ttl_bars=settings.maker_ttl_bars,
                 bnb_discount=settings.bnb_fee_discount,
             )
-            demo_gates = None
-            risk = BasicRiskEngine(RiskConfig(
-                fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
-            ))
+            if learning:
+                from cryptobot.config.learning_mode import LEARNING_GATES, apply_learning_risk
+
+                scorer_gates = LEARNING_GATES
+                risk = BasicRiskEngine(apply_learning_risk(RiskConfig(
+                    fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
+                )))
+            else:
+                scorer_gates = None
+                risk = BasicRiskEngine(RiskConfig(
+                    fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
+                ))
 
         costs = effective_costs(CostModel(), policy)
+        if learning:
+            from cryptobot.config.learning_mode import apply_learning_costs
+
+            costs = apply_learning_costs(costs)
 
         # Decision scorer gets its OWN strategy instances (stateful strategies
         # must not share state between scoring and trading paths).
@@ -106,11 +126,12 @@ class PaperTradingService:
             from cryptobot.strategies.demo_pulse import DEMO_STRATEGIES as _DS
 
             scorer = DecisionScorer(
-                [cls() for cls in _DS.values()], costs=costs, gates=demo_gates,
+                [cls() for cls in _DS.values()], costs=costs, gates=scorer_gates,
             )
         else:
             scorer = DecisionScorer(
                 [STRATEGY_REGISTRY[n]() for n in strategy_names], costs=costs,
+                gates=scorer_gates,
             )
 
         # Live cost discovery: real commission rates + real spread + depth-based
@@ -390,7 +411,11 @@ class PaperTradingService:
         risk_cfg = RiskConfig(
             fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
         )
-        if settings.small_account_guardrails:
+        if settings.learning_mode:
+            from cryptobot.config.learning_mode import apply_learning_risk
+
+            risk_cfg = apply_learning_risk(risk_cfg)
+        elif settings.small_account_guardrails:
             gr = apply_small_account_guardrails(
                 risk_cfg, equity, self.runtime.costs.round_trip_fraction,
             )
