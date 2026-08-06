@@ -56,6 +56,7 @@ class PaperTradingService:
         account = PaperAccount.with_starting_balance(
             settings.paper_quote_asset, settings.paper_starting_balance_quote
         )
+        learning = settings.learning_mode and not demo_mode
         if demo_mode:
             from cryptobot.strategies.demo_pulse import DEMO_STRATEGIES
 
@@ -68,8 +69,18 @@ class PaperTradingService:
                        "money to costs. Never use its results as evidence.",
             )
         else:
-            strategy_names = enabled_strategies or list(STRATEGY_REGISTRY)
-            strategies = [STRATEGY_REGISTRY[name]() for name in strategy_names]
+            if learning:
+                from cryptobot.config.learning_mode import (
+                    LEARNING_GATES,
+                    apply_learning_risk,
+                    build_learning_strategies,
+                )
+
+                strategies = build_learning_strategies()
+                strategy_names = [s.spec.name for s in strategies]
+            else:
+                strategy_names = enabled_strategies or list(STRATEGY_REGISTRY)
+                strategies = [STRATEGY_REGISTRY[name]() for name in strategy_names]
 
         # Execution policy + cost model reflecting it (maker entries are cheaper)
         from cryptobot.decision.scoring import DecisionScorer, Gates
@@ -81,12 +92,11 @@ class PaperTradingService:
         from cryptobot.pairs.service import enabled_symbols
         from cryptobot.risk.engine import RiskConfig
 
-        learning = settings.learning_mode and not demo_mode
-        if learning:
+        if learning and not demo_mode:
             logger.warning(
                 "LEARNING_MODE_ACTIVE",
-                detail="Relaxed decision/risk gates for testnet learning — "
-                       "more trades expected, higher fee drag, not graduation evidence.",
+                detail="Relaxed decision/risk gates + learning_pulse on testnet — "
+                       "expect frequent low-edge trades; not graduation evidence.",
             )
 
         if demo_mode:
@@ -94,13 +104,16 @@ class PaperTradingService:
             scorer_gates = Gates(buy_threshold=0.2, strong_buy_threshold=0.45)
             risk = BasicRiskEngine(RiskConfig(min_confidence=0.4))
         else:
-            policy = ExecutionPolicy(
-                entry_style=OrderStyle.MAKER_LIMIT
-                if settings.entry_order_style == "maker_limit" else OrderStyle.MARKET,
-                limit_offset_bps=settings.maker_limit_offset_bps,
-                ttl_bars=settings.maker_ttl_bars,
-                bnb_discount=settings.bnb_fee_discount,
-            )
+            if learning:
+                policy = ExecutionPolicy(entry_style=OrderStyle.MARKET)
+            else:
+                policy = ExecutionPolicy(
+                    entry_style=OrderStyle.MAKER_LIMIT
+                    if settings.entry_order_style == "maker_limit" else OrderStyle.MARKET,
+                    limit_offset_bps=settings.maker_limit_offset_bps,
+                    ttl_bars=settings.maker_ttl_bars,
+                    bnb_discount=settings.bnb_fee_discount,
+                )
             if learning:
                 from cryptobot.config.learning_mode import LEARNING_GATES, apply_learning_risk
 
@@ -129,8 +142,11 @@ class PaperTradingService:
                 [cls() for cls in _DS.values()], costs=costs, gates=scorer_gates,
             )
         else:
+            from cryptobot.config.learning_mode import build_learning_strategies
+
             scorer = DecisionScorer(
-                [STRATEGY_REGISTRY[n]() for n in strategy_names], costs=costs,
+                build_learning_strategies() if learning else [STRATEGY_REGISTRY[n]() for n in strategy_names],
+                costs=costs,
                 gates=scorer_gates,
             )
 
@@ -149,13 +165,14 @@ class PaperTradingService:
                 pass
             return build_live_cost_model(
                 symbol, fees, book, intended_notional,
-                base=effective_costs(CostModel(), policy),
+                base=costs,
             )
 
         self._live_costs = _live_costs
 
         async def _enabled() -> set[str]:
-            return await enabled_symbols(sessions)
+            db_enabled = await enabled_symbols(sessions)
+            return db_enabled & {s.upper() for s in settings.trading_pairs}
 
         from cryptobot.ml.inference import DeployedModelPredictor
         from cryptobot.runtime.market_context import build_market_context
@@ -182,6 +199,7 @@ class PaperTradingService:
             stale_after_s=settings.market_data_stale_after_s,
             near_miss_confidence_margin=settings.near_miss_confidence_margin,
             near_miss_edge_margin=settings.near_miss_edge_margin,
+            skip_cost_gate=learning,
         )
 
         async def _market_context(symbol: str, bars: list) -> object:

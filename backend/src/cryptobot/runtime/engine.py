@@ -105,6 +105,7 @@ class TradingRuntime:
     live_costs: object | None = None
     near_miss_confidence_margin: float = 0.05
     near_miss_edge_margin: float = 0.001
+    skip_cost_gate: bool = False
 
     _history: dict[tuple[str, str], list[Bar]] = field(default_factory=lambda: defaultdict(list))
     _positions: dict[str, OpenPosition] = field(default_factory=dict)
@@ -354,7 +355,7 @@ class TradingRuntime:
                                error=type(exc).__name__)
                 cost_note = "live cost lookup failed — conservative defaults used"
 
-        if not costs.passes_cost_gate(edge):
+        if not self.skip_cost_gate and not costs.passes_cost_gate(edge):
             from cryptobot.risk.near_miss import near_miss_cost_gate
 
             nm = near_miss_cost_gate(edge, costs, self.near_miss_edge_margin)

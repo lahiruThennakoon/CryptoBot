@@ -63,6 +63,8 @@ class Gates:
     buy_threshold: float = 0.35
     sell_threshold: float = -0.35
     strong_sell_threshold: float = -0.60
+    require_strategy_entry: bool = True    # False only in testnet learning mode
+    skip_cost_gate: bool = False           # True only in testnet learning mode
 
 
 @dataclass
@@ -283,13 +285,15 @@ class DecisionScorer:
             elif not context.liquidity_ok:
                 record.action, record.status = Action.NO_TRADE, DecisionStatus.NO_TRADE
                 record.reasons.append("Rejected: order-book depth too thin for a safe fill.")
-            elif record.expected_net_return is not None and not self._costs.passes_cost_gate(
-                record.expected_gross_return or 0.0
+            elif (
+                not g.skip_cost_gate
+                and record.expected_net_return is not None
+                and not self._costs.passes_cost_gate(record.expected_gross_return or 0.0)
             ):
                 record.action, record.status = Action.NO_TRADE, DecisionStatus.NO_TRADE
                 record.reasons.append(
                     "Rejected: expected profit does not clear costs plus the safety margin.")
-            elif not entry_votes:
+            elif g.require_strategy_entry and not entry_votes:
                 record.action, record.status = Action.NO_TRADE, DecisionStatus.NO_TRADE
                 record.reasons.append(
                     "Rejected: score is positive but no strategy independently "
