@@ -57,6 +57,14 @@ class PaperTradingService:
             settings.paper_quote_asset, settings.paper_starting_balance_quote
         )
         learning = settings.learning_mode and not demo_mode
+        active_paper = (
+            settings.active_paper_mode
+            and settings.execution_mode == "paper"
+            and not demo_mode
+            and not learning
+        )
+        if settings.active_paper_mode and settings.learning_mode and not demo_mode:
+            learning = False
         if demo_mode:
             from cryptobot.strategies.demo_pulse import DEMO_STRATEGIES
 
@@ -69,12 +77,13 @@ class PaperTradingService:
                        "money to costs. Never use its results as evidence.",
             )
         else:
-            if learning:
-                from cryptobot.config.learning_mode import (
-                    LEARNING_GATES,
-                    apply_learning_risk,
-                    build_learning_strategies,
-                )
+            if active_paper:
+                from cryptobot.config.active_paper import build_active_paper_strategies
+
+                strategies = build_active_paper_strategies()
+                strategy_names = [s.spec.name for s in strategies]
+            elif learning:
+                from cryptobot.config.learning_mode import build_learning_strategies
 
                 strategies = build_learning_strategies()
                 strategy_names = [s.spec.name for s in strategies]
@@ -92,7 +101,13 @@ class PaperTradingService:
         from cryptobot.pairs.service import enabled_symbols
         from cryptobot.risk.engine import RiskConfig
 
-        if learning and not demo_mode:
+        if active_paper and not demo_mode:
+            logger.warning(
+                "ACTIVE_PAPER_MODE",
+                detail="Relaxed gates + normal strategies on paper with simulated "
+                       "fees — frequent small trades for 30-day evaluation.",
+            )
+        elif learning and not demo_mode:
             logger.warning(
                 "LEARNING_MODE_ACTIVE",
                 detail="Relaxed decision/risk gates + learning_pulse on testnet — "
@@ -104,8 +119,24 @@ class PaperTradingService:
             scorer_gates = Gates(buy_threshold=0.2, strong_buy_threshold=0.45)
             risk = BasicRiskEngine(RiskConfig(min_confidence=0.4))
         else:
-            if learning:
+            if active_paper:
+                from cryptobot.config.active_paper import ACTIVE_PAPER_GATES, ACTIVE_PAPER_POLICY
+
+                policy = ACTIVE_PAPER_POLICY
+                scorer_gates = ACTIVE_PAPER_GATES
+                from cryptobot.config.active_paper import apply_active_paper_risk
+
+                risk = BasicRiskEngine(apply_active_paper_risk(RiskConfig(
+                    fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
+                )))
+            elif learning:
                 policy = ExecutionPolicy(entry_style=OrderStyle.MARKET)
+                from cryptobot.config.learning_mode import LEARNING_GATES, apply_learning_risk
+
+                scorer_gates = LEARNING_GATES
+                risk = BasicRiskEngine(apply_learning_risk(RiskConfig(
+                    fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
+                )))
             else:
                 policy = ExecutionPolicy(
                     entry_style=OrderStyle.MAKER_LIMIT
@@ -114,21 +145,17 @@ class PaperTradingService:
                     ttl_bars=settings.maker_ttl_bars,
                     bnb_discount=settings.bnb_fee_discount,
                 )
-            if learning:
-                from cryptobot.config.learning_mode import LEARNING_GATES, apply_learning_risk
-
-                scorer_gates = LEARNING_GATES
-                risk = BasicRiskEngine(apply_learning_risk(RiskConfig(
-                    fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
-                )))
-            else:
                 scorer_gates = None
                 risk = BasicRiskEngine(RiskConfig(
                     fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
                 ))
 
         costs = effective_costs(CostModel(), policy)
-        if learning:
+        if active_paper:
+            from cryptobot.config.active_paper import apply_active_paper_costs
+
+            costs = apply_active_paper_costs(costs)
+        elif learning:
             from cryptobot.config.learning_mode import apply_learning_costs
 
             costs = apply_learning_costs(costs)
@@ -142,13 +169,16 @@ class PaperTradingService:
                 [cls() for cls in _DS.values()], costs=costs, gates=scorer_gates,
             )
         else:
+            from cryptobot.config.active_paper import build_active_paper_strategies
             from cryptobot.config.learning_mode import build_learning_strategies
 
-            scorer = DecisionScorer(
-                build_learning_strategies() if learning else [STRATEGY_REGISTRY[n]() for n in strategy_names],
-                costs=costs,
-                gates=scorer_gates,
-            )
+            if active_paper:
+                scorer_strategies = build_active_paper_strategies()
+            elif learning:
+                scorer_strategies = build_learning_strategies()
+            else:
+                scorer_strategies = [STRATEGY_REGISTRY[n]() for n in strategy_names]
+            scorer = DecisionScorer(scorer_strategies, costs=costs, gates=scorer_gates)
 
         # Live cost discovery: real commission rates + real spread + depth-based
         # slippage, refreshed per request with caching. Falls back conservatively.
@@ -429,7 +459,11 @@ class PaperTradingService:
         risk_cfg = RiskConfig(
             fixed_entry_notional_usd=float(settings.fixed_entry_notional_usd),
         )
-        if settings.learning_mode:
+        if settings.active_paper_mode and settings.execution_mode == "paper":
+            from cryptobot.config.active_paper import apply_active_paper_risk
+
+            risk_cfg = apply_active_paper_risk(risk_cfg)
+        elif settings.learning_mode:
             from cryptobot.config.learning_mode import apply_learning_risk
 
             risk_cfg = apply_learning_risk(risk_cfg)

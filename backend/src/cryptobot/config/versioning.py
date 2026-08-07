@@ -61,4 +61,5 @@ def settings_snapshot(settings: object) -> dict:
         "ws_include_depth": settings.ws_include_depth,
         "small_account_guardrails": settings.small_account_guardrails,
         "learning_mode": settings.learning_mode,
+        "active_paper_mode": settings.active_paper_mode,
     }

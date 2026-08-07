@@ -267,6 +267,13 @@ function PositionsTable({ rows, onAsk }: { rows: Position[]; onAsk: (q: string) 
   );
 }
 
+function formatDecimal(value: string, decimals = 2): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return value;
+  if (n === 0) return (0).toFixed(decimals);
+  return n.toFixed(decimals);
+}
+
 function FillsTable({ rows }: { rows: Fill[] }) {
   if (!rows.length) return <p className="empty">No fills yet.</p>;
   return (
@@ -278,7 +285,10 @@ function FillsTable({ rows }: { rows: Fill[] }) {
             <td>{new Date(r.at).toLocaleTimeString()}</td>
             <td>{r.symbol}</td>
             <td className={r.side === "BUY" ? "pos" : "neg"}>{r.side}</td>
-            <td>{r.role}</td><td>{r.price}</td><td>{r.qty}</td><td>{r.fee}</td>
+            <td>{r.role}</td>
+            <td>{formatDecimal(r.price, 2)}</td>
+            <td>{formatDecimal(r.qty, 4)}</td>
+            <td>{formatDecimal(r.fee, 4)}</td>
           </tr>
         ))}
       </tbody>

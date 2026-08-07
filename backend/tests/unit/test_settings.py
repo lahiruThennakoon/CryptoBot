@@ -13,6 +13,12 @@ class TestLearningMode:
         assert settings.learning_mode is True
 
 
+class TestActivePaperMode:
+    def test_active_paper_env(self):
+        settings = Settings(_env_file=None, CRYPTOBOT_ACTIVE_PAPER="true")
+        assert settings.active_paper_mode is True
+
+
 class TestLiveGate:
     def test_default_mode_is_paper(self):
         settings = Settings(_env_file=None)
