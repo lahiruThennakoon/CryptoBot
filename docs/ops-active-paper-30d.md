@@ -3,6 +3,10 @@
 Use with `EXECUTION_MODE=paper` and `CRYPTOBOT_ACTIVE_PAPER=true`.
 Simulated fees/spread apply; PnL is more meaningful than testnet (zero fees).
 
+**Aggressive profile (current):** cost gate off, buy score ≥ 0.08, min confidence 0.25,
+up to 1% risk / 12% position / 30 trades/day, shorter loss cooldown. Expect frequent
+trades and fee drag — paper feedback only, not live evidence.
+
 ## EC2 `.env` (copy these lines)
 
 ```env

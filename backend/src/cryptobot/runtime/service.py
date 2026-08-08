@@ -104,8 +104,9 @@ class PaperTradingService:
         if active_paper and not demo_mode:
             logger.warning(
                 "ACTIVE_PAPER_MODE",
-                detail="Relaxed gates + normal strategies on paper with simulated "
-                       "fees — frequent small trades for 30-day evaluation.",
+                detail="Aggressive paper profile: loose gates, cost gate off, "
+                       "higher risk sizing — expect frequent trades and fee drag. "
+                       "Not graduation evidence.",
             )
         elif learning and not demo_mode:
             logger.warning(
@@ -225,11 +226,15 @@ class PaperTradingService:
             enabled_pairs=_enabled,
             decision_scorer=scorer,
             analysis_only=settings.execution_mode == "analysis",
-            loss_cooldown_hours=0.03 if demo_mode else 1.0,   # ~2 min in demo
+            # Active paper: short cooldown so losing streaks don't stall feedback.
+            # Demo: ~2 min. Default: 1h revenge-trade protection.
+            loss_cooldown_hours=(
+                0.03 if demo_mode else (0.25 if active_paper else 1.0)
+            ),
             stale_after_s=settings.market_data_stale_after_s,
             near_miss_confidence_margin=settings.near_miss_confidence_margin,
             near_miss_edge_margin=settings.near_miss_edge_margin,
-            skip_cost_gate=learning,
+            skip_cost_gate=learning or active_paper,
         )
 
         async def _market_context(symbol: str, bars: list) -> object:

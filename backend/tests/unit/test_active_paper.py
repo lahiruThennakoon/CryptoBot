@@ -9,15 +9,18 @@ from cryptobot.risk.engine import RiskConfig
 
 
 def test_active_paper_gates_are_relaxed() -> None:
-    assert ACTIVE_PAPER_GATES.buy_threshold <= 0.15
-    assert ACTIVE_PAPER_GATES.skip_cost_gate is False
+    assert ACTIVE_PAPER_GATES.buy_threshold <= 0.10
+    assert ACTIVE_PAPER_GATES.skip_cost_gate is True
+    assert ACTIVE_PAPER_GATES.max_spread_fraction >= 0.006
 
 
-def test_active_paper_risk_small_and_frequent() -> None:
+def test_active_paper_risk_higher_and_frequent() -> None:
     cfg = apply_active_paper_risk(RiskConfig(fixed_entry_notional_usd=10.0))
-    assert cfg.min_confidence == 0.35
-    assert cfg.max_trades_per_day == 15
-    assert cfg.risk_per_trade == 0.004
+    assert cfg.min_confidence <= 0.25
+    assert cfg.max_trades_per_day >= 30
+    assert cfg.risk_per_trade >= 0.01
+    assert cfg.max_position_pct >= 0.12
+    assert cfg.max_positions >= 4
 
 
 def test_active_paper_strategies_are_normal_roster() -> None:
@@ -25,9 +28,16 @@ def test_active_paper_strategies_are_normal_roster() -> None:
     assert "learning_pulse" not in names
     assert "ma_trend" in names
     assert "momentum_volume" in names
+    assert "mtf_trend" in names
 
 
-def test_active_paper_costs_keep_fee_gate() -> None:
+def test_active_paper_strategies_use_aggressive_params() -> None:
+    by_name = {s.spec.name: s for s in build_active_paper_strategies()}
+    assert by_name["momentum_volume"].spec.params["min_return"] <= 0.003
+    assert by_name["rsi_reversion"].spec.params["oversold"] >= 40.0
+    assert by_name["ma_trend"].spec.params["fast"] <= 10
+
+
+def test_active_paper_costs_drop_safety_margin() -> None:
     costs = apply_active_paper_costs(CostModel())
-    assert costs.safety_margin < CostModel().safety_margin
-    assert costs.safety_margin > 0
+    assert costs.safety_margin == 0.0
